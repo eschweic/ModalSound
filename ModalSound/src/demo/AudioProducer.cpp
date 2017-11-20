@@ -40,12 +40,12 @@ AudioProducer::AudioProducer(const QSettings& settings, const QDir& dataDir):
     mForce_.resize( modal_->num_modes() );
 
     // --- load moments ---
-    {
-        QString ff = settings.value("transfer/moments").toString();
-        QFileInfo fInfo(ff);
-        filename = fInfo.isRelative() ? dataDir.filePath(ff) : ff;
-    }
-    load_moments(filename);
+    // {
+    //     QString ff = settings.value("transfer/moments").toString();
+    //     QFileInfo fInfo(ff);
+    //     filename = fInfo.isRelative() ? dataDir.filePath(ff) : ff;
+    // }
+    // load_moments(filename);
 
     // --- setup audio output device ---
     const QString devStr = settings.value("audio/device").toString();
@@ -126,6 +126,9 @@ void AudioProducer::load_vertex_map(const QString& filename)
             SHOULD_NEVER_HAPPEN(3);
         }
         vidS2T_[id2] = id1;
+        // read rest of line
+        double x, y, z, area;
+        fin >> x >> y >> z >> area;
     }
     if ( fin.fail() )
     {
@@ -208,7 +211,8 @@ void AudioProducer::single_channel_synthesis(const Tuple3ui& tri, const Vector3d
     const int totTicks = SR*TS;
     for(int i = 0;i < modal_->num_modes();++ i)
     {
-        FMMTransferEval::TComplex trans = transfer_[i]->eval( cam );
+        // FMMTransferEval::TComplex trans = transfer_[i]->eval( cam );
+        FMMTransferEval::TComplex trans(1.0, 0.0); // Don't calculate transfer
 
         const double SS = mForce_[i] * abs(trans) / omegaD[i];
 

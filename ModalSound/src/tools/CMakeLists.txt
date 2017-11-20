@@ -53,3 +53,10 @@ target_link_libraries(extmat
     ${MKL_LIBS} ${CMAKE_THREAD_LIBS_INIT})
 set_target_properties(extmat 
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
+
+
+add_executable(eigensolver
+    modal_eigen.cpp)
+target_include_directories(eigensolver PUBLIC ../)
+target_link_libraries(eigensolver ${MKL_LIBS} ${CMAKE_THREAD_LIBS_INIT} ${Boost_PROGRAM_OPTIONS_LIBRARY} /usr/local/opt/tbb/lib/libtbb.dylib)
+set_target_properties(eigensolver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
