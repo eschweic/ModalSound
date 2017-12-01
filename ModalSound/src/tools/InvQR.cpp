@@ -111,8 +111,6 @@ static void parse_cmd(int argc, const char* argv[])
         // PRINT_MSG("Output file:                %s\n", outFile.c_str());
         // PRINT_MSG("# of eigenvalues est.:      %d\n", numEigv);
         PRINT_MSG("Reference density:          %g\n", density);
-        // PRINT_MSG("Low frequency:              %g\n", freqLow);
-        // PRINT_MSG("High frequency:             %g\n", freqHigh);
         PRINT_MSG("===============================================\n");
     }
 }
@@ -225,6 +223,24 @@ public:
   const Eigen::Map<Eigen::SparseMatrix<double>>& getMap() const {
     return map;
   }
+
+  int rows() const { return nrow; }
+  int cols() const { return ncol; }
+
+  Eigen::VectorXd diagonal() const {
+    int n = rows();
+    Eigen::VectorXd d(n);
+    for (int i=0; i<n; i++) {
+      if (outerPtr[i] == outerPtr[i+1]) {
+        d(i) = 0.0;
+      } else if (innerPtr[outerPtr[i]] == i) {
+          d(i) = data[outerPtr[i]];
+      } else {
+        d(i) = 0.0;
+      }
+    }
+    return d;
+  }
 };
 
 
@@ -322,6 +338,137 @@ Eigen::VectorXd invQR(const SparsePlusLowRank& A, int k) {
 }
 
 
+
+#include <Eigen/SparseCholesky>
+
+template<class KSolver>
+Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& Q, const Eigen::ArrayXd& tol) {
+  using namespace Eigen;
+  const double shift = -1.0;
+  const int maxIters = 200;
+
+  const int p = tol.rows();
+  const int k = Q.cols();
+  const int n = M.rows();
+  assert(p < k);
+
+  SparseMatrix<double> Kt = K.getMap() - shift * M.getMap();
+
+  MatrixXd Qk(n,k), Kk(k,k), Mk(k,k);
+  ArrayXd lambda = ArrayXd::Zero(p), prevLambda(p), error(p);
+  GeneralizedSelfAdjointEigenSolver<MatrixXd> gevd(k);
+
+  KSolver Ktinv(Kt);
+  if (verbose) std::cout << "Ktinv initialized" << std::endl;
+  for (int iter = 0; iter<maxIters; iter++) {
+    if (iter == 0) {
+      Qk.noalias() = Ktinv.solve(Q);
+      Kk.noalias() = Q.transpose() * Qk;
+    } else {
+      Qk.noalias() = Ktinv.solve(M.getMap().selfadjointView<Lower>() * Q);
+      Kk.noalias() = Qk.transpose() * (Kt.selfadjointView<Lower>() * Qk);
+    }
+    if (verbose) std::cout << "iter " << iter << ": Ktinv solve" << std::endl;
+    Mk.noalias() = Qk.transpose() * (M.getMap().selfadjointView<Lower>() * Qk);
+    gevd.compute(Kk, Mk);
+    assert(gevd.info() == Eigen::Success);
+
+    // std::cout << gevd.eigenvectors().colwise().norm() << std::endl;
+    // MatrixXd resid = Kk * gevd.eigenvectors() - Mk * gevd.eigenvectors() * gevd.eigenvalues().asDiagonal();
+    // if (!resid.isZero()) {
+      // std::cout << "resid norm:\n" << resid.norm() << "\n\n";
+
+      // MatrixXd Kd = K.getMap().toDense();
+      // std::cout << "Kd:\n" << Kd << "\n\n";
+
+      // SparseMatrix<double> Kts = Kt.selfadjointView<Lower>();
+      // MatrixXd Ktd = Kts.toDense();
+      // std::cout << "Ktd:\n" << Ktd << "\n";
+      // std::cout << "Ktd is symmetric: " << std::boolalpha << Ktd.isApprox(Ktd.transpose()) << std::endl << std::endl;
+
+      // SparseMatrix<double> Ms = M.getMap().selfadjointView<Lower>();
+      // MatrixXd Md = Ms.toDense();
+      // std::cout << "Md:\n" << Md << "\n";
+      // std::cout << "Md is symmetric: " << std::boolalpha << Md.isApprox(Md.transpose()) << std::endl << std::endl;
+
+      // std::cout << "Mk:\n" << Mk << "\n";
+      // std::cout << "Mk is symmetric: " << std::boolalpha << Mk.isApprox(Mk.transpose()) << std::endl << std::endl;
+      // std::cout << "Kk:\n" << Kk << "\n";
+      // std::cout << "Kk is symmetric: " << std::boolalpha << Kk.isApprox(Kk.transpose()) << std::endl << std::endl;
+
+      // MatrixXd tMk = (Qk.transpose() * (Md * Qk));
+      // std::cout << "tMk\n" << Mk << "\n";
+      // std::cout << "tMk is symmetric: " << std::boolalpha << tMk.isApprox(tMk.transpose()) << std::endl << std::endl;
+
+      // MatrixXd tKk = (Qk.transpose() * (Ktd * Qk));
+      // std::cout << "tKk\n" << tKk << "\n";
+      // std::cout << "tKk is symmetric: " << std::boolalpha << tKk.isApprox(tKk.transpose()) << std::endl << std::endl;
+
+      // MatrixXd tKdQk = Ktd * Qk;
+      // std::cout << "tKdQk:\n" << tKdQk << "\n\n";
+
+      // MatrixXd tQ = Qk.transpose() * Qk;
+      // std::cout << "tQ\n" << tQ << "\n";
+      // std::cout << "tQ is symmetric: " << std::boolalpha << tQ.isApprox(tQ.transpose()) << std::endl << std::endl;
+
+      // MatrixXd Ktilde = Q.transpose() * Qk;
+      // std::cout << "Ktilde\n" << Ktilde << "\n";
+      // std::cout << "Ktilde is symmetric: " << std::boolalpha << Ktilde.isApprox(Ktilde.transpose()) << std::endl << std::endl;
+
+      // MatrixXd diff = Ktilde - Kk;
+      // std::cout << "diff\n" << diff << "\n";
+      // std::cout << "diff is symmetric: " << std::boolalpha << diff.isApprox(diff.transpose()) << std::endl << std::endl;
+
+      // MatrixXd tdiff = Ktilde - tKk;
+      // std::cout << "tdiff\n" << tdiff << "\n";
+      // std::cout << "tdiff is symmetric: " << std::boolalpha << tdiff.isApprox(tdiff.transpose()) << std::endl << std::endl;
+    //   throw;
+    // }  
+
+    Q.noalias() = Qk * gevd.eigenvectors();
+    if (verbose) std::cout << "iter " << iter << ": gevd solve" << std::endl;
+
+    // Check tolerance
+    
+    // if (iter > 0) {
+    //   lambda = gevd.eigenvalues().head(p).array().square();
+    //   for (int i=0; i<p; i++) {
+    //     lambda(i) /= gevd.eigenvectors().col(i).dot(gevd.eigenvectors().col(i));
+    //   }
+    //   lambda = (1.0 - lambda).sqrt();
+    //   if (verbose) std::cout << "iter " << iter << ": tol: " << lambda.transpose() << std::endl;
+
+    //   if (verbose) {
+    //     Eigen::VectorXd ev2(p);
+    //     for (int i=0; i<p; i++) {
+    //       ev2(i) = gevd.eigenvectors().col(i).dot(gevd.eigenvectors().col(i));
+    //     }
+
+    //     std::cout << "lambda: " << gevd.eigenvalues().head(p).transpose() << std::endl;
+    //     std::cout << "ev2:    " << ev2.transpose() << std::endl;
+    //   }
+
+    //   if ((lambda <= tol).all()) break;
+    // }
+
+    prevLambda = lambda;
+    lambda = gevd.eigenvalues().head(p).array();
+    if (iter > 1) {
+      error = (1.0 - (prevLambda / lambda)).square();
+      if (verbose) std::cout << "iter " << iter << ": error: " << error.transpose() << std::endl;
+      if ((error <= tol).all()) break;
+    }
+  }
+
+  return (gevd.eigenvalues().array() + shift).matrix();
+}
+
+bool checkSturmSequence(const SparseData& K, const SparseData& M, const Eigen::VectorXd& Lambda) {
+
+  return false;
+}
+
+
 // #include "io/TetMeshWriter.hpp"
 
 int main(int argc, char const *argv[]) {
@@ -335,7 +482,7 @@ int main(int argc, char const *argv[]) {
 
   SparseData M(massMFile.c_str());
   SparseData K(stiffMFile.c_str());
-  SparsePlusLowRank splr(M, K, R);
+  // SparsePlusLowRank splr(M, K, R);
 
   // Verify MinvK + RR^T is nonsingular
   // Eigen::MatrixXd A(R.rows(), R.rows());
@@ -348,12 +495,68 @@ int main(int argc, char const *argv[]) {
   //   std::cout << "K * R(" << i << ") norm: " << (K.getMap().selfadjointView<Eigen::Lower>() * R.col(i)).norm() << std::endl;
   // }
 
-  std::cout << invQR(splr, 10) << std::endl;
+  // std::cout << invQR(splr, 10) << std::endl;
+
+  int n = M.rows();
+  int p = 10;
+  // int p = 2;
+  int q = std::max(p + 8, 2 * p) + R.cols();
+  // int q = 9; 
+  Eigen::MatrixXd Q(n, q);
+  Q.leftCols(R.cols()) = R;
+
+  std::default_random_engine generator;
+  std::normal_distribution<double> dist(0.0, 1.0);
+  auto normal = [&] () { return dist(generator); };
+
+  // option: random cols
+  // Q.rightCols(q - R.cols()) = Eigen::MatrixXd::NullaryExpr(n, q - R.cols(), normal);
+
+  // option: Bathe suggestion
+  Eigen::VectorXd Mdiag = M.diagonal();
+  Eigen::VectorXd Kdiag = K.diagonal();
+
+  int colIndex = R.cols();
+  Q.col(colIndex) = Mdiag;
+  colIndex++;
+
+  int numecols = q - R.cols() - 2;
+  Eigen::ArrayXi indices = Eigen::ArrayXi::LinSpaced(numecols, 0, numecols-1);
+  Eigen::ArrayXd ratios = Kdiag.head(numecols).array() / Mdiag.head(numecols).array();
+  int maxIndex = 0;
+  double maxValue = ratios.maxCoeff(&maxIndex);
+  for (int i=numecols; i<n; i++) {
+    double r = Kdiag(i) / Mdiag(i);
+    if (r < maxValue) {
+      ratios(maxIndex) = r;
+      indices(maxIndex) = i;
+      maxValue = ratios.maxCoeff(&maxIndex);
+    }
+  }
+  for (int i=0; i<numecols; i++, colIndex++) {
+    Q.col(colIndex) = Eigen::VectorXd::Unit(n, indices(i));
+  }
+  Q.col(colIndex) = Eigen::VectorXd::NullaryExpr(n, normal);
+
+
+  Q.colwise().normalize();
+
+  // std::cout << "QTQ:\n" << (Q.transpose() * Q) << "\n\n"; 
+
+  Eigen::ArrayXd tol = Eigen::ArrayXd::Constant(p+R.cols(), 1e-4);
+  Eigen::VectorXd evs = subspaceIteration<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>(K, M, Q, tol);
+  std::cout << "Evs:" << std::endl << evs << std::endl;
 
   // Eigen::MatrixXd Md = M.getMap().toDense();
   // Md = Md.selfadjointView<Eigen::Lower>();
   // std::cout << "M:\n" << Md << "\n\n";
   // std::cout << "M rank: " << Md.colPivHouseholderQr().rank() << " / " << R.rows() << std::endl;
+
+  // Dense, full solve
+  Eigen::MatrixXd Md = M.getMap().toDense();
+  Eigen::MatrixXd Kd = K.getMap().toDense();
+  Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> gevd(Kd, (1.0/density) * Md, Eigen::EigenvaluesOnly);
+  std::cout << "Ref Evs:" << std::endl << gevd.eigenvalues().head(p+R.cols()) << std::endl;
 
   // FixedVtxTetMesh<double> mesh;
   // mesh.add_vertex(Point3d(0.0, 0.0, 0.0));
