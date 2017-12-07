@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdlib>
+#include <chrono>
 #include <boost/program_options.hpp>
 #ifdef USE_MKL
 #   include <mkl.h>
@@ -338,6 +339,7 @@ int main(int argc, char* argv[])
     feastinit(feastparam);
     if ( verbose ) feastparam[0]=1;  /*change from default value */
 
+    std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
     dfeast_scsrgv(&UPLO, &nrowK, data[0].data(), ptrrow[0].data(), idxcol[0].data(),
                   data[1].data(), ptrrow[1].data(), idxcol[1].data(),
                   feastparam, &epsout, &loop, &eMin, &eMax, &M0, 
@@ -386,6 +388,9 @@ int main(int argc, char* argv[])
     vector<int> sortids(M);
     for(int i = 0;i < M;++ i) sortids[i] = i;
     sort(sortids.begin(), sortids.end(), EIGV_CMP_(eval.data()));
+    std::chrono::system_clock::time_point end = std::chrono::system_clock::now();
+
+    std::cout << "FEAST time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
 
     //// save the data
     if ( verbose ) PRINT_MSG("Write eigenvalues & eigenvectors into file: %s\n", outFile.c_str());

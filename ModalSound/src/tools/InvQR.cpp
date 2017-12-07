@@ -10,15 +10,73 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <Eigen/Sparse>
+#include <Eigen/SparseCholesky>
 #include <Eigen/Eigenvalues>
 
 #include "utils/term_msg.h"
 #include "geometry/FixedVtxTetMesh.hpp"
 #include "io/TetMeshReader.hpp"
 
-std::string stiffMFile, massMFile, tetMeshFile;
-double density;
+
+std::string stiffMFile, massMFile, tetMeshFile, outFile;
+double density, tolerance;
 bool verbose = false;
+bool ref = false;
+int numEigv;
+
+enum InitialSubspace {
+  Bathe = 0,
+  Random = 1,
+} initialSubspace;
+
+const char* initialSubspaceName(InitialSubspace is) {
+  switch (is) {
+  case Bathe:
+    return "Bathe";
+  case Random:
+    return "Random";
+  default:
+    return "";
+  }
+}
+
+enum ConvergenceTest {
+  Bathe = 0,
+  JND = 1,
+  Trace = 2,
+  Rayleigh = 3,
+} convTest;
+
+const char* convgergenceTestName(ConvergenceTest ct) {
+  switch (ct) {
+  case Bathe:
+    return "Bathe";
+  case JND:
+    return "JND";
+  case Trace:
+    return "Trace";
+  case Rayleigh:
+    return "Rayleigh";
+  default:
+    return "";
+  }
+}
+
+enum KSolver {
+  LDLT = 0,
+  PCG = 1,
+} ksolver;
+
+const char* kSolverName(KSolver ks) {
+  switch (ks) {
+  case LDLT:
+    return "LDLT";
+  case PCG:
+    return "PCG";
+  default:
+    return "";
+  }
+}
 
 static void parse_cmd(int argc, const char* argv[])
 {
@@ -28,22 +86,27 @@ static void parse_cmd(int argc, const char* argv[])
             ("help,h", "display help information");
     po::options_description configOpt("Configuration");
     configOpt.add_options()
-            // ("neig,n", po::value<int>(&numEigv)->default_value(200), 
-                    // "Maximum number of smallest eigenvalues to compute")
+            ("neig,n", po::value<int>(&numEigv)->default_value(16), 
+                    "Maximum number of smallest eigenvalues to compute")
             ("stiff,s", po::value<std::string>(&stiffMFile)->default_value(""),
                     "Name of the stiffness matrix file")
             ("mass,m", po::value<std::string>(&massMFile)->default_value(""),
                     "Name of the mass matrix file")
             ("tet,t", po::value<std::string>(&tetMeshFile)->default_value(""),
                     "Name of the tet mesh file")
-            // ("out,o", po::value<string>(&outFile)->default_value(""),
-                    // "Name of the output modes file")
+            ("out,o", po::value<std::string>(&outFile)->default_value(""),
+                    "Name of the output modes file")
             ("density,d", po::value<double>(&density)->default_value(1.),
                     "Reference density value")
-            // ("fmin", po::value<double>(&freqLow)->default_value(5.),
-                    // "Lowest frequency value based on the estimated density")
-            // ("fmax", po::value<double>(&freqHigh)->default_value(15000.),
-                    // "Highest frequency value based on the estimated density")
+            ("init,i", po::value<int>(&initialSubspace)->default_value(Bathe),
+                    "Initial subspace method; 0=Bathe, 1=Random")
+            ("conv,c", po::value<int>(&convTest)->default_value(JND),
+                    "Convgergence test; 0=Bathe, 1=JND, 2=Trace, 3=Rayleigh")
+            ("tol,e", po::value<double>(&tolerance)->default_value(0.006),
+                    "Tolerance for convergence")
+            ("ksolve,k", po::value<int>(&ksolve)->default_value(LDLT),
+                    "Stiffness system solver; 0=LDLT, 1=PCG")
+            ("ref,r", "Compute reference solution")
             ("verbose,v", "Display details");
     // use configure file to specify the option
     po::options_description cfileOpt("Configure file");
@@ -55,63 +118,77 @@ static void parse_cmd(int argc, const char* argv[])
 
     po::variables_map vm;
     store(po::parse_command_line(argc, argv, cmdOpts), vm);
-    if ( vm.count("cfg-file") )
-    {
-        std::ifstream ifs(vm["cfg-file"].as<std::string>().c_str());
-        store(parse_config_file(ifs, configOpt), vm);
+    if (vm.count("cfg-file")) {
+      std::ifstream ifs(vm["cfg-file"].as<std::string>().c_str());
+      store(parse_config_file(ifs, configOpt), vm);
     }
     po::notify(vm);
 
-    if ( vm.count("help") )
-    {
-        printf("Usage: %s [options] \n", argv[0]);
-        printf("       This executable takes as input the stiffness and mass matrices\n");
-        printf("       of a tet. mesh, and computes the eigenvectors and eigenvalues\n");
-        printf("       using the eigensolvers provided in Intel MKL\n");
-        std::cout << cmdOpts << std::endl;
-        exit(0);
+    if (vm.count("help")) {
+      printf("Usage: %s [options] \n", argv[0]);
+      printf("       This executable takes as input the stiffness and mass matrices\n");
+      printf("       of a tet. mesh, and computes the eigenvectors and eigenvalues\n");
+      printf("       using the subspace iteration method.\n");
+      std::cout << cmdOpts << std::endl;
+      exit(0);
     }
     verbose = vm.count("verbose") > 0;
 
-    if ( massMFile.empty() )
-    {
-        PRINT_ERROR("Specify mass matrix file\n");
-        exit(1);
+    if (massMFile.empty()) {
+      PRINT_ERROR("Specify mass matrix file\n");
+      exit(1);
     }
 
-    if ( stiffMFile.empty() ) 
-    {
-        PRINT_ERROR("Specify stiffness matrix file\n");
-        exit(1);
+    if (stiffMFile.empty()) {
+      PRINT_ERROR("Specify stiffness matrix file\n");
+      exit(1);
     }
-        if ( tetMeshFile.empty() )
-    {
-        PRINT_ERROR("Specify tet mesh file\n");
-        exit(1);
-    }
-
-    if ( density <= 0. )
-    {
-        PRINT_ERROR("Density value must be positive [d=%g now]\n", density);
-        exit(1);
+    
+    if (tetMeshFile.empty()) {
+      PRINT_ERROR("Specify tet mesh file\n");
+      exit(1);
     }
 
-    // if ( outFile.empty() ) 
-    // {
-    //     PRINT_ERROR("Specify the output file\n");
-    //     exit(1);
-    // }
+    if (density <= 0.0) {
+      PRINT_ERROR("Density value must be positive [d=%g now]\n", density);
+      exit(1);
+    }
 
-    if ( verbose )
-    {
-        PRINT_MSG("=============== Problem Summary ===============\n");
-        PRINT_MSG("Mass Matrix:                %s\n", massMFile.c_str());
-        PRINT_MSG("Stiffness Matrix:           %s\n", stiffMFile.c_str());
-        PRINT_MSG("Tet Mesh:                   %s\n", tetMeshFile.c_str()); 
-        // PRINT_MSG("Output file:                %s\n", outFile.c_str());
-        // PRINT_MSG("# of eigenvalues est.:      %d\n", numEigv);
-        PRINT_MSG("Reference density:          %g\n", density);
-        PRINT_MSG("===============================================\n");
+    if (numEigv <= 6) {
+      PRINT_ERROR("numEigv must be greater than 6");
+      exit(1);
+    }
+
+    if (initialSubspace > 1) {
+      PRINT_ERROR("Initial subspace method must be less than 2");
+      exit(1);
+    }
+
+    if (convTest > 3) {
+      PRINT_ERROR("Convergence test method must be less than 4");
+      exit(1);
+    }
+
+    if (kSolver > 1) {
+      PRINT_ERROR("KSolver must be less than 2");
+      exit(1);
+    }
+
+    ref = vm.count("ref") > 0;
+
+    if (verbose) {
+      PRINT_MSG("=============== Problem Summary ===============\n");
+      PRINT_MSG("Mass Matrix:                %s\n", massMFile.c_str());
+      PRINT_MSG("Stiffness Matrix:           %s\n", stiffMFile.c_str());
+      PRINT_MSG("Tet Mesh:                   %s\n", tetMeshFile.c_str()); 
+      PRINT_MSG("Output file:                %s\n", outFile.c_str());
+      PRINT_MSG("# of eigenvalues est.:      %d\n", numEigv);
+      PRINT_MSG("Reference density:          %g\n", density);
+      PRINT_MSG("Initial subspace method:    %s\n", initialSubspaceName(initialSubspace));
+      PRINT_MSG("Convergence test:           %s\n", convgergenceTestName(convTest));
+      PRINT_MSG("Convergence tolerance:      %g\n", tolerance);
+      PRINT_MSG("KSolver:                    %s\n", kSolverName(ksolver));
+      PRINT_MSG("===============================================\n");
     }
 }
 
@@ -163,6 +240,48 @@ static uint8_t read_csc_dmatrix(const char* file,
   fin.close();
   return ret;
 }
+
+/*
+ * File Format:
+ * <int>: size of the eigen problem
+ * <int>: # of eigenvalues
+ * <eigenvalues>
+ * <eigenvec_1>
+ * ...
+ * <eigenvec_n>
+ */
+
+void write_eigenvalues(const Eigen::MatrixXd& eigenvectors, const Eigen::ArrayXd& eigenvalues,
+  const char* file) {
+  using namespace std;
+
+  ofstream fout(file, std::ios::binary);
+  if (!fout.good())  {
+    cerr << "write_eigenvalues::Cannot open file " << file << " to write" << endl;
+    return;
+  }
+
+  // size of the eigen-problem. Here square matrix is assumed.
+  int nsz = eigenvectors.rows();
+  fout.write((char *)&nsz, sizeof(int));
+  int nev = eigenvalues.size();
+  fout.write((char *)&nev, sizeof(int));
+
+  // output eigenvalues
+  for (int vid = 0; vid < nev; ++vid) {
+    fout.write((const char*)&(eigenvalues.data()[vid]), sizeof(double));
+    printf("ev#%3d:  %lf %lfHz\n", vid, eigenvalues(vid), sqrt(eigenvalues(vid)/density)*0.5*M_1_PI);
+  }
+
+  // output eigenvectors
+  for (int vid = 0; vid < nev; ++vid) {
+    fout.write((const char*)&(eigenvectors.data()[vid * nsz]), sizeof(double)*nsz);
+  }
+
+  fout.close();
+}
+
+
 
 Vector3d centroid(const FixedVtxTetMesh<double>& tmesh) {
   double n = tmesh.num_vertices();
@@ -243,7 +362,43 @@ public:
   }
 };
 
-#include <Eigen/SparseCholesky>
+bool convergedBathe(const Eigen::MatrixXd& Q, const Eigen::ArrayXd& lambda, const double tol) {
+  Eigen::ArrayXd denom(lambda.size());
+  for (int i=0; i<denom.size(); i++) {
+    denom(i) = Q.col(i).dot(Q.col(i));
+  }
+  const Eigen::ArrayXd error = (1.0 - lambda.square() / denom).sqrt();
+  if (verbose) std::cout << "error: " << error.transpose() << std::endl;
+  return (error < tol).all();
+}
+
+bool convergedJND(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lambda, const double tol) {
+  const Eigen::ArrayXd prevFreq = prevLambda.sqrt(); // * 0.5 * M_1_PI);
+  const Eigen::ArrayXd freq = lambda.sqrt(); // * 0.5 * M_1_PI);
+  const Eigen::ArrayXd error = (freq - prevFreq).abs() / freq;
+  if (verbose) std::cout << "error: " << error.transpose() << std::endl;
+  return (error < tol).all();
+}
+
+bool convergedTrace(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lambda, const double tol) {
+  const double prevTrace = prevLambda.sum();
+  const double trace = lambda.sum();
+  const double error = std::abs(trace - prevTrace) / lambda(lambda.size()-1);
+  if (verbose) std::cout << "error: " << error << std::endl;
+  return error < tol;
+}
+
+bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
+  const Eigen::SparseMatrix<real>& K, const Eigen::SparseMatrix<real>& M, const double tol) {
+  const Eigen::MatrixXd MX = M.selfadjointView<Eigen::Lower>() * X;
+  const Eigen::MatrixXd KX = K.selfadjointView<Eigen::Lower>() * X;
+  Eigen::ArrayXd error(lambda.size());
+  for (int i=0; i<error.size(); i++) {
+    error(i) = std::abs(X.col(i).dot(KX.col(i)) / X.col(i).dot(MX.col(i)) - lambda(i));
+  }
+  if (verbose) std::cout << "error: " << error << error.transpose() << std::endl;
+  return (error < tol).all();
+}
 
 int checkNEVs(const SparseData& K, const SparseData& M, const double largestEV, const double largestRelError) {
   Eigen::SparseMatrix<double> A = K.getMap();
@@ -253,105 +408,73 @@ int checkNEVs(const SparseData& K, const SparseData& M, const double largestEV, 
 }
 
 template<class KSolver>
-Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& Q, const Eigen::ArrayXd& tol,
+Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& X, const int p,
   const int maxIters = 20, const double scale = 1.0, const double shift = -1.0) {
   using namespace Eigen;
 
-  const int p = tol.rows();
-  const int k = Q.cols();
+  const int k = X.cols();
   const int n = M.rows();
   assert(p < k);
 
   SparseMatrix<double> Kt = scale * K.getMap();
   Kt -= shift * M.getMap();
 
-  MatrixXd Qk(n,k), Kk(k,k), Mk(k,k);
+  MatrixXd Xk(n,k), Kk(k,k), Mk(k,k);
   ArrayXd lambda = ArrayXd::Zero(p), prevLambda(p), error(p);
   GeneralizedSelfAdjointEigenSolver<MatrixXd> gevd(k);
 
   KSolver Ktinv(Kt);
+  // SparseMatrix<double> Ktsav = Kt.selfadjointView<Eigen::Lower>();
+  // KSolver Ktinv(Ktsav);
+
   if (verbose) std::cout << "Ktinv initialized" << std::endl;
   for (int iter = 0; iter<maxIters; iter++) {
     if (iter == 0) {
-      Qk.noalias() = Ktinv.solve(Q);
-      Kk.noalias() = Q.transpose() * Qk;
+      Xk.noalias() = Ktinv.solve(X);
+      Kk.noalias() = Z.transpose() * Xk;
     } else {
-      Qk.noalias() = Ktinv.solve(M.getMap().selfadjointView<Lower>() * Q);
-      Kk.noalias() = Qk.transpose() * (Kt.selfadjointView<Lower>() * Qk);
+      Xk.noalias() = Ktinv.solve(M.getMap().selfadjointView<Lower>() * X);
+      Kk.noalias() = Xk.transpose() * (Kt.selfadjointView<Lower>() * Xk);
     }
     if (verbose) std::cout << "iter " << iter << ": Ktinv solve" << std::endl;
-    Mk.noalias() = Qk.transpose() * (M.getMap().selfadjointView<Lower>() * Qk);
+    Mk.noalias() = Xk.transpose() * (M.getMap().selfadjointView<Lower>() * Xk);
     gevd.compute(Kk, Mk);
     assert(gevd.info() == Eigen::Success);
 
-    Q.noalias() = Qk * gevd.eigenvectors();
+    X.noalias() = Xk * gevd.eigenvectors();
     if (verbose) std::cout << "iter " << iter << ": gevd solve" << std::endl;
-
-    // Check tolerance
-    
-    // if (iter > 0) {
-    //   lambda = gevd.eigenvalues().head(p).array().square();
-    //   for (int i=0; i<p; i++) {
-    //     lambda(i) /= gevd.eigenvectors().col(i).dot(gevd.eigenvectors().col(i));
-    //   }
-    //   lambda = (1.0 - lambda).sqrt();
-    //   if (verbose) std::cout << "iter " << iter << ": tol: " << lambda.transpose() << std::endl;
-
-    //   if (verbose) {
-    //     Eigen::VectorXd ev2(p);
-    //     for (int i=0; i<p; i++) {
-    //       ev2(i) = gevd.eigenvectors().col(i).dot(gevd.eigenvectors().col(i));
-    //     }
-
-    //     std::cout << "lambda: " << gevd.eigenvalues().head(p).transpose() << std::endl;
-    //     std::cout << "ev2:    " << ev2.transpose() << std::endl;
-    //   }
-
-    //   if ((lambda <= tol).all()) break;
-    // }
 
     prevLambda = lambda;
     lambda = gevd.eigenvalues().head(p).array();
-    if (iter > 1) {
-      error = (1.0 - (prevLambda / lambda)).square();
-      if (verbose) std::cout << "iter " << iter << ": error: " << error.transpose() << std::endl;
-      if ((error <= tol).all()) {
-        int nEVs = checkNEVs(K, M, (lambda(p-1) + shift) / scale, error(p-1));
-        if (verbose) std::cout << "Converged; expected " << nEVs << " evs, found " << p << std::endl;
-        break;
+    // Check for convergence
+    bool converged;
+    if (convTest == ConvergenceTest::Bathe) {
+      converged = convergedBathe(Q, lambda, tolerance);
+    } else if (convTest == ConvergenceTest::JND) {
+      if (iter >= 1) {
+        converged = convergedJND(prevLambda, lambda, tolerance);
+      } else {
+        converged = false;
       }
+    } else if (convTest == ConvergenceTest::Trace) {
+      if (iter >= 1) {
+        converged = convergedTrace(prevLambda, lambda, tolerance);
+      } else {
+        converged = false;
+      }
+    } else if (convTest == ConvergenceTest::Rayleigh) {
+      converged = convergedRayleigh(lambda, X.leftCols(p), Kt, M.getMap(), tolerance);
+    }
+
+    if (converged) {
+      int nEVs = checkNEVs(K, M, (lambda(p-1) + shift) / scale, error(p-1));
+      if (verbose) std::cout << "Converged; expected " << nEVs << " evs, found " << p << std::endl;
+      break;
     }
   }
 
   return ((gevd.eigenvalues().head(p).array() + shift) / scale).matrix();
 }
-
-// double jnd(const double freq) {
-//   if (freq <= 500.0) {
-//     return 3.0;
-//   }
-//   if (freq < 1000.0) {
-//     return (freq - 500.0) / 500.0 * 3.0 + 3.0;
-//   }
-//   return freq * 0.06;
-// }
-
-bool converged(const Eigen::ArrayXd& lambda, const Eigen::ArrayXd& error) {
-  const Eigen::ArrayXd thresholds(lambda.sqrt() * 0.5 * M_1_PI);
-  auto jnd = [] (const double freq) {
-    if (freq <= 500.0) { // (500 * 2 * pi)^2 = 9869604.4012
-      return 3.0; // (3 * 2 * pi)^2 = 355.30575846
-    }
-    if (freq < 1000.0) { // (1000 * 2 * pi)^2 = 39478417.605
-      return (freq - 500.0) / 500.0 * 3.0 + 3.0;
-    }
-    return freq * 0.06;
-  };
-  return (error.abs() < thresholds.unaryExpr(jnd)).all(); // FIXME: relative error? on EVs?
-}
-
-
-// #include "io/TetMeshWriter.hpp"
 
 int main(int argc, char const *argv[]) {
 
@@ -360,88 +483,80 @@ int main(int argc, char const *argv[]) {
   FixedVtxTetMesh<double> mesh;
   FV_TetMeshLoader_Double::load_mesh(tetMeshFile.c_str(), mesh);
 
-  const double massScale = 1.0 / density;
-  const double stiffnessScale = 1e-8;
-
-  Eigen::MatrixXd R = getNullspace(mesh);
-
   SparseData M(massMFile.c_str());
   SparseData K(stiffMFile.c_str());
 
   int n = M.rows();
-  int p = 10;
-  // int p = 2;
-  int q = std::max(p + 8, 2 * p) + R.cols();
-  // int q = 9; 
-  Eigen::MatrixXd Q(n, q);
+  int k = numEigv;
+  int p = std::max(k + 8, 2 * k);
+
+  auto start = std::chrono::system_clock::now();
+  Eigen::MatrixXd R = getNullspace(mesh);
+  Eigen::MatrixXd Q(n, k+p);
   Q.leftCols(R.cols()) = R;
 
   std::default_random_engine generator;
   std::normal_distribution<double> dist(0.0, 1.0);
   auto normal = [&] () { return dist(generator); };
 
-  // option: random cols
-  // Q.rightCols(q - R.cols()) = Eigen::MatrixXd::NullaryExpr(n, q - R.cols(), normal);
-
-  // option: Bathe suggestion
   Eigen::VectorXd Mdiag = M.diagonal();
   Eigen::VectorXd Kdiag = K.diagonal();
 
-  int colIndex = R.cols();
-  Q.col(colIndex) = Mdiag;
-  colIndex++;
+  if (initialSubspace == InitialSubspace::Bathe) {
+    int colIndex = R.cols();
+    Q.col(colIndex) = Mdiag;
+    colIndex++;
 
-  int numecols = q - R.cols() - 2;
-  Eigen::ArrayXi indices = Eigen::ArrayXi::LinSpaced(numecols, 0, numecols-1);
-  Eigen::ArrayXd ratios = Kdiag.head(numecols).array() / Mdiag.head(numecols).array();
-  int maxIndex = 0;
-  double maxValue = ratios.maxCoeff(&maxIndex);
-  for (int i=numecols; i<n; i++) {
-    double r = Kdiag(i) / Mdiag(i);
-    if (r < maxValue) {
-      ratios(maxIndex) = r;
-      indices(maxIndex) = i;
-      maxValue = ratios.maxCoeff(&maxIndex);
+    int numecols = Q.cols() - R.cols() - 2;
+    Eigen::ArrayXi indices = Eigen::ArrayXi::LinSpaced(numecols, 0, numecols-1);
+    Eigen::ArrayXd ratios = Kdiag.head(numecols).array() / Mdiag.head(numecols).array();
+    int maxIndex = 0;
+    double maxValue = ratios.maxCoeff(&maxIndex);
+    for (int i=numecols; i<n; i++) {
+      double r = Kdiag(i) / Mdiag(i);
+      if (r < maxValue) {
+        ratios(maxIndex) = r;
+        indices(maxIndex) = i;
+        maxValue = ratios.maxCoeff(&maxIndex);
+      }
     }
-  }
-  for (int i=0; i<numecols; i++, colIndex++) {
-    Q.col(colIndex) = Eigen::VectorXd::Unit(n, indices(i));
-  }
-  Q.col(colIndex) = Eigen::VectorXd::NullaryExpr(n, normal);
+    for (int i=0; i<numecols; i++, colIndex++) {
+      Q.col(colIndex) = Eigen::VectorXd::Unit(n, indices(i));
+    }
+    Q.col(colIndex) = Eigen::VectorXd::NullaryExpr(n, normal);
 
+  } else if (initialSubspace = InitialSubspace::Random) {
+    Q.rightCols(Q.cols() - R.cols()) = Eigen::MatrixXd::NullaryExpr(n, Q.cols() - R.cols(), normal);
+  }
 
   Q.colwise().normalize();
 
-  // std::cout << "QTQ:\n" << (Q.transpose() * Q) << "\n\n"; 
+  const double stiffnessScale = (1.0 / Kdiag.array().mean());
+  if (verbose) std::cout << "stiffnessScale: " << stiffnessScale << std::endl;
 
-  Eigen::ArrayXd tol = Eigen::ArrayXd::Constant(p+R.cols(), 1e-4);
-
-  auto start = std::chrono::system_clock::now();
-  Eigen::VectorXd evs = subspaceIteration<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>(K, M, Q, tol, 20, stiffnessScale);
+  Eigen::VectorXd evs = subspaceIteration<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>(K, M, Q, p+R.cols(), 20, stiffnessScale);
+  // Eigen::VectorXd evs = subspaceIteration<Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Upper|Eigen::Lower, Eigen::IncompleteCholesky<double>>>(K, M, Q, p+R.cols(), 20, stiffnessScale);
   auto end = std::chrono::system_clock::now();
 
   std::cout << "subspaceIteration time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
   std::cout << "Evs:" << std::endl << evs << std::endl << std::endl;
 
-  // Dense, full solve
-  Eigen::MatrixXd Md = M.getMap().toDense();
-  Eigen::MatrixXd Kd = K.getMap().toDense();
+  if (!outFile.empty()) {
+    write_eigenvalues(Q, evs, outFile.c_str());
+  }
 
-  start = std::chrono::system_clock::now();
-  Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> gevd(Kd, Md, Eigen::EigenvaluesOnly);
-  end = std::chrono::system_clock::now();
+  if (ref) {
+    // Dense solve
+    Eigen::MatrixXd Md = M.getMap().toDense();
+    Eigen::MatrixXd Kd = K.getMap().toDense();
 
-  std::cout << "Dense GSAES time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
-  std::cout << "Ref Evs:" << std::endl << gevd.eigenvalues().head(p+R.cols()) << std::endl;
+    start = std::chrono::system_clock::now();
+    Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> gevd(Kd, Md, Eigen::EigenvaluesOnly);
+    end = std::chrono::system_clock::now();
 
-  // FixedVtxTetMesh<double> mesh;
-  // mesh.add_vertex(Point3d(0.0, 0.0, 0.0));
-  // mesh.add_vertex(Point3d(1.0, 0.0, 0.0));
-  // mesh.add_vertex(Point3d(0.0, 1.0, 0.0));
-  // mesh.add_vertex(Point3d(0.0, 0.0, 1.0));
-  // mesh.add_tet(0, 1, 2, 3);
-  // mesh.init();
-  // FV_TetMeshWriter_Double::write_mesh(argv[1], mesh);
+    std::cout << "Dense GSAES time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
+    std::cout << "Ref Evs:" << std::endl << gevd.eigenvalues().head(p+R.cols()) << std::endl;
+  }
 
   return 0;
 }
