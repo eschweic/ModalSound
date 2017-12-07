@@ -10,7 +10,6 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <Eigen/Sparse>
-#include <Eigen/SparseCholesky>
 #include <Eigen/Eigenvalues>
 
 #include "utils/term_msg.h"
@@ -24,16 +23,18 @@ bool verbose = false;
 bool ref = false;
 int numEigv;
 
+int i_initialSubspace, i_convTest, i_ksolver;
+
 enum InitialSubspace {
-  Bathe = 0,
+  BatheSuggestion = 0,
   Random = 1,
 } initialSubspace;
 
 const char* initialSubspaceName(InitialSubspace is) {
   switch (is) {
-  case Bathe:
+  case InitialSubspace::BatheSuggestion:
     return "Bathe";
-  case Random:
+  case InitialSubspace::Random:
     return "Random";
   default:
     return "";
@@ -49,13 +50,13 @@ enum ConvergenceTest {
 
 const char* convgergenceTestName(ConvergenceTest ct) {
   switch (ct) {
-  case Bathe:
+  case ConvergenceTest::Bathe:
     return "Bathe";
-  case JND:
+  case ConvergenceTest::JND:
     return "JND";
-  case Trace:
+  case ConvergenceTest::Trace:
     return "Trace";
-  case Rayleigh:
+  case ConvergenceTest::Rayleigh:
     return "Rayleigh";
   default:
     return "";
@@ -69,9 +70,9 @@ enum KSolver {
 
 const char* kSolverName(KSolver ks) {
   switch (ks) {
-  case LDLT:
+  case KSolver::LDLT:
     return "LDLT";
-  case PCG:
+  case KSolver::PCG:
     return "PCG";
   default:
     return "";
@@ -98,13 +99,13 @@ static void parse_cmd(int argc, const char* argv[])
                     "Name of the output modes file")
             ("density,d", po::value<double>(&density)->default_value(1.),
                     "Reference density value")
-            ("init,i", po::value<int>(&initialSubspace)->default_value(Bathe),
+            ("init,i", po::value<int>(&i_initialSubspace)->default_value(InitialSubspace::BatheSuggestion),
                     "Initial subspace method; 0=Bathe, 1=Random")
-            ("conv,c", po::value<int>(&convTest)->default_value(JND),
+            ("conv,c", po::value<int>(&i_convTest)->default_value(ConvergenceTest::JND),
                     "Convgergence test; 0=Bathe, 1=JND, 2=Trace, 3=Rayleigh")
             ("tol,e", po::value<double>(&tolerance)->default_value(0.006),
                     "Tolerance for convergence")
-            ("ksolve,k", po::value<int>(&ksolve)->default_value(LDLT),
+            ("ksolve,k", po::value<int>(&i_ksolver)->default_value(KSolver::LDLT),
                     "Stiffness system solver; 0=LDLT, 1=PCG")
             ("ref,r", "Compute reference solution")
             ("verbose,v", "Display details");
@@ -143,7 +144,7 @@ static void parse_cmd(int argc, const char* argv[])
       PRINT_ERROR("Specify stiffness matrix file\n");
       exit(1);
     }
-    
+
     if (tetMeshFile.empty()) {
       PRINT_ERROR("Specify tet mesh file\n");
       exit(1);
@@ -159,19 +160,25 @@ static void parse_cmd(int argc, const char* argv[])
       exit(1);
     }
 
-    if (initialSubspace > 1) {
+    if (i_initialSubspace > 1) {
       PRINT_ERROR("Initial subspace method must be less than 2");
       exit(1);
+    } else {
+      initialSubspace = (InitialSubspace) i_initialSubspace;
     }
 
-    if (convTest > 3) {
+    if (i_convTest > 3) {
       PRINT_ERROR("Convergence test method must be less than 4");
       exit(1);
+    } else {
+      convTest = (ConvergenceTest) i_convTest;
     }
 
-    if (kSolver > 1) {
-      PRINT_ERROR("KSolver must be less than 2");
+    if (i_ksolver > 1) {
+      PRINT_ERROR("ksolver must be less than 2");
       exit(1);
+    } else {
+      ksolver = (KSolver) i_ksolver;
     }
 
     ref = vm.count("ref") > 0;
@@ -180,7 +187,7 @@ static void parse_cmd(int argc, const char* argv[])
       PRINT_MSG("=============== Problem Summary ===============\n");
       PRINT_MSG("Mass Matrix:                %s\n", massMFile.c_str());
       PRINT_MSG("Stiffness Matrix:           %s\n", stiffMFile.c_str());
-      PRINT_MSG("Tet Mesh:                   %s\n", tetMeshFile.c_str()); 
+      PRINT_MSG("Tet Mesh:                   %s\n", tetMeshFile.c_str());
       PRINT_MSG("Output file:                %s\n", outFile.c_str());
       PRINT_MSG("# of eigenvalues est.:      %d\n", numEigv);
       PRINT_MSG("Reference density:          %g\n", density);
@@ -362,6 +369,7 @@ public:
   }
 };
 
+
 bool convergedBathe(const Eigen::MatrixXd& Q, const Eigen::ArrayXd& lambda, const double tol) {
   Eigen::ArrayXd denom(lambda.size());
   for (int i=0; i<denom.size(); i++) {
@@ -389,9 +397,9 @@ bool convergedTrace(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lamb
 }
 
 bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
-  const Eigen::SparseMatrix<real>& K, const Eigen::SparseMatrix<real>& M, const double tol) {
-  const Eigen::MatrixXd MX = M.selfadjointView<Eigen::Lower>() * X;
-  const Eigen::MatrixXd KX = K.selfadjointView<Eigen::Lower>() * X;
+  const Eigen::SparseMatrix<double>& K, const Eigen::SparseMatrix<double>& M, const double tol) {
+  const Eigen::MatrixXd MX = M.selfadjointView<Eigen::Lower>() * X.leftCols(lambda.size());
+  const Eigen::MatrixXd KX = K.selfadjointView<Eigen::Lower>() * X.leftCols(lambda.size());
   Eigen::ArrayXd error(lambda.size());
   for (int i=0; i<error.size(); i++) {
     error(i) = std::abs(X.col(i).dot(KX.col(i)) / X.col(i).dot(MX.col(i)) - lambda(i));
@@ -431,7 +439,7 @@ Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eige
   for (int iter = 0; iter<maxIters; iter++) {
     if (iter == 0) {
       Xk.noalias() = Ktinv.solve(X);
-      Kk.noalias() = Z.transpose() * Xk;
+      Kk.noalias() = X.transpose() * Xk;
     } else {
       Xk.noalias() = Ktinv.solve(M.getMap().selfadjointView<Lower>() * X);
       Kk.noalias() = Xk.transpose() * (Kt.selfadjointView<Lower>() * Xk);
@@ -447,23 +455,15 @@ Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eige
     prevLambda = lambda;
     lambda = gevd.eigenvalues().head(p).array();
     // Check for convergence
-    bool converged;
+    bool converged = false;
     if (convTest == ConvergenceTest::Bathe) {
-      converged = convergedBathe(Q, lambda, tolerance);
-    } else if (convTest == ConvergenceTest::JND) {
-      if (iter >= 1) {
-        converged = convergedJND(prevLambda, lambda, tolerance);
-      } else {
-        converged = false;
-      }
-    } else if (convTest == ConvergenceTest::Trace) {
-      if (iter >= 1) {
-        converged = convergedTrace(prevLambda, lambda, tolerance);
-      } else {
-        converged = false;
-      }
+      converged = convergedBathe(gevd.eigenvectors(), lambda, tolerance);
+    } else if (convTest == ConvergenceTest::JND && iter >= 1) {
+      converged = convergedJND(prevLambda, lambda, tolerance);
+    } else if (convTest == ConvergenceTest::Trace && iter >= 1) {
+      converged = convergedTrace(prevLambda, lambda, tolerance);
     } else if (convTest == ConvergenceTest::Rayleigh) {
-      converged = convergedRayleigh(lambda, X.leftCols(p), Kt, M.getMap(), tolerance);
+      converged = convergedRayleigh(lambda, X, Kt, M.getMap(), tolerance);
     }
 
     if (converged) {
@@ -502,7 +502,7 @@ int main(int argc, char const *argv[]) {
   Eigen::VectorXd Mdiag = M.diagonal();
   Eigen::VectorXd Kdiag = K.diagonal();
 
-  if (initialSubspace == InitialSubspace::Bathe) {
+  if (initialSubspace == InitialSubspace::BatheSuggestion) {
     int colIndex = R.cols();
     Q.col(colIndex) = Mdiag;
     colIndex++;
@@ -525,7 +525,7 @@ int main(int argc, char const *argv[]) {
     }
     Q.col(colIndex) = Eigen::VectorXd::NullaryExpr(n, normal);
 
-  } else if (initialSubspace = InitialSubspace::Random) {
+  } else if (initialSubspace == InitialSubspace::Random) {
     Q.rightCols(Q.cols() - R.cols()) = Eigen::MatrixXd::NullaryExpr(n, Q.cols() - R.cols(), normal);
   }
 
