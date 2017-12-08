@@ -277,7 +277,6 @@ void write_eigenvalues(const Eigen::MatrixXd& eigenvectors, const Eigen::ArrayXd
   // output eigenvalues
   for (int vid = 0; vid < nev; ++vid) {
     fout.write((const char*)&(eigenvalues.data()[vid]), sizeof(double));
-    printf("ev#%3d:  %lf %lfHz\n", vid, eigenvalues(vid), sqrt(eigenvalues(vid)/density)*0.5*M_1_PI);
   }
 
   // output eigenvectors
@@ -369,6 +368,27 @@ public:
   }
 };
 
+class KSolverImpl {
+public:
+  virtual Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) =0;
+};
+
+class LDLTImpl : public KSolverImpl {
+  Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
+public:
+  LDLTImpl(const Eigen::SparseMatrix<double>& K) : solver(K) { }
+  Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) { return solver.solve(rhs); }
+};
+
+class PCGImpl : public KSolverImpl {
+  Eigen::SparseMatrix<double> Ksym;
+  Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Upper|Eigen::Lower,
+  Eigen::IncompleteCholesky<double>> solver;
+public:
+  PCGImpl(const Eigen::SparseMatrix<double>& K) : Ksym(K.selfadjointView<Eigen::Lower>()), 
+  solver(Ksym) { }
+  Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) { return solver.solve(rhs); }
+};
 
 bool convergedBathe(const Eigen::MatrixXd& Q, const Eigen::ArrayXd& lambda, const double tol) {
   Eigen::ArrayXd denom(lambda.size());
@@ -404,7 +424,7 @@ bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
   for (int i=0; i<error.size(); i++) {
     error(i) = std::abs(X.col(i).dot(KX.col(i)) / X.col(i).dot(MX.col(i)) - lambda(i));
   }
-  if (verbose) std::cout << "error: " << error << error.transpose() << std::endl;
+  if (verbose) std::cout << "error: " << error.transpose() << std::endl;
   return (error < tol).all();
 }
 
@@ -415,33 +435,35 @@ int checkNEVs(const SparseData& K, const SparseData& M, const double largestEV, 
   return (ldlt.vectorD().array() < 0.0).count();
 }
 
-template<class KSolver>
-Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& X, const int p,
+Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& X, const int k,
   const int maxIters = 20, const double scale = 1.0, const double shift = -1.0) {
   using namespace Eigen;
 
-  const int k = X.cols();
+  const int q = X.cols();
   const int n = M.rows();
-  assert(p < k);
+  assert(k < q);
 
   SparseMatrix<double> Kt = scale * K.getMap();
   Kt -= shift * M.getMap();
 
-  MatrixXd Xk(n,k), Kk(k,k), Mk(k,k);
-  ArrayXd lambda = ArrayXd::Zero(p), prevLambda(p), error(p);
-  GeneralizedSelfAdjointEigenSolver<MatrixXd> gevd(k);
+  MatrixXd Xk(n,q), Kk(q,q), Mk(q,q);
+  ArrayXd lambda = ArrayXd::Zero(k), prevLambda(k);
+  GeneralizedSelfAdjointEigenSolver<MatrixXd> gevd(q);
 
-  KSolver Ktinv(Kt);
-  // SparseMatrix<double> Ktsav = Kt.selfadjointView<Eigen::Lower>();
-  // KSolver Ktinv(Ktsav);
+  std::unique_ptr<KSolverImpl> Ktinv;
+  if (ksolver == KSolver::LDLT) {
+    Ktinv.reset(new LDLTImpl(Kt));
+  } else {
+    Ktinv.reset(new PCGImpl(Kt));
+  }
 
   if (verbose) std::cout << "Ktinv initialized" << std::endl;
   for (int iter = 0; iter<maxIters; iter++) {
     if (iter == 0) {
-      Xk.noalias() = Ktinv.solve(X);
+      Xk.noalias() = Ktinv->solve(X);
       Kk.noalias() = X.transpose() * Xk;
     } else {
-      Xk.noalias() = Ktinv.solve(M.getMap().selfadjointView<Lower>() * X);
+      Xk.noalias() = Ktinv->solve(M.getMap().selfadjointView<Lower>() * X);
       Kk.noalias() = Xk.transpose() * (Kt.selfadjointView<Lower>() * Xk);
     }
     if (verbose) std::cout << "iter " << iter << ": Ktinv solve" << std::endl;
@@ -453,7 +475,7 @@ Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eige
     if (verbose) std::cout << "iter " << iter << ": gevd solve" << std::endl;
 
     prevLambda = lambda;
-    lambda = gevd.eigenvalues().head(p).array();
+    lambda = gevd.eigenvalues().head(k).array();
     // Check for convergence
     bool converged = false;
     if (convTest == ConvergenceTest::Bathe) {
@@ -467,13 +489,13 @@ Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eige
     }
 
     if (converged) {
-      int nEVs = checkNEVs(K, M, (lambda(p-1) + shift) / scale, error(p-1));
-      if (verbose) std::cout << "Converged; expected " << nEVs << " evs, found " << p << std::endl;
+      int nEVs = checkNEVs(K, M, (lambda(k-1) + shift) / scale, tolerance);
+      if (verbose) std::cout << "Converged; expected " << nEVs << " evs, found " << k << std::endl;
       break;
     }
   }
 
-  return ((gevd.eigenvalues().head(p).array() + shift) / scale).matrix();
+  return ((lambda + shift) / scale).matrix();
 }
 
 int main(int argc, char const *argv[]) {
@@ -534,12 +556,13 @@ int main(int argc, char const *argv[]) {
   const double stiffnessScale = (1.0 / Kdiag.array().mean());
   if (verbose) std::cout << "stiffnessScale: " << stiffnessScale << std::endl;
 
-  Eigen::VectorXd evs = subspaceIteration<Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>>>(K, M, Q, p+R.cols(), 20, stiffnessScale);
-  // Eigen::VectorXd evs = subspaceIteration<Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Upper|Eigen::Lower, Eigen::IncompleteCholesky<double>>>(K, M, Q, p+R.cols(), 20, stiffnessScale);
+  Eigen::VectorXd evs = subspaceIteration(K, M, Q, k, 20, stiffnessScale);
   auto end = std::chrono::system_clock::now();
 
   std::cout << "subspaceIteration time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
-  std::cout << "Evs:" << std::endl << evs << std::endl << std::endl;
+  for (int vid=0; vid<evs.size(); vid++) {
+    printf("ev#%3d:  %lf %lfHz\n", vid, evs(vid), sqrt(evs(vid)/density)*0.5*M_1_PI);
+  }
 
   if (!outFile.empty()) {
     write_eigenvalues(Q, evs, outFile.c_str());
@@ -555,7 +578,9 @@ int main(int argc, char const *argv[]) {
     end = std::chrono::system_clock::now();
 
     std::cout << "Dense GSAES time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
-    std::cout << "Ref Evs:" << std::endl << gevd.eigenvalues().head(p+R.cols()) << std::endl;
+    for (int vid=0; vid<evs.size(); vid++) {
+      printf("ev#%3d:  %lf %lfHz\n", vid, gevd.eigenvalues()(vid), sqrt(gevd.eigenvalues()(vid)/density)*0.5*M_1_PI);
+    }
   }
 
   return 0;
