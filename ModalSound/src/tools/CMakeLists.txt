@@ -64,8 +64,7 @@ set_target_properties(eigensolver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 set(CMAKE_CXX_STANDARD 11)
 
 add_executable(alt-eigensolver
-    InvQR.cpp
-    # ../generic/precision_type.cpp
+    SubspaceIter.cpp
     )
 target_include_directories(alt-eigensolver PUBLIC ${EIGEN_INCLUDE_DIRS})
 set_target_properties(alt-eigensolver PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
