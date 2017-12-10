@@ -200,7 +200,7 @@ void ClickSoundViewer::postSelection(const QPoint&)
     //cout << "selected triangle ID:  " << selTriId_ << endl;
 
     //// Now synthesize sound and play
-    {
+    if (selTriId_ >= 0) {
         qglviewer::Vec cam = camera()->position();
         const Point3d camPos( cam.x, cam.y, cam.z );
 
@@ -212,9 +212,9 @@ void ClickSoundViewer::postSelection(const QPoint&)
                 vtx[tgl[selTriId_].z] );
         nml.normalize();
         audio_->play( mesh_.triangle_ids(selTriId_), nml, camPos );
+        updateGL();
     }
-    
-    if ( selTriId_ >= 0 ) updateGL();
+
 }
 
 void ClickSoundViewer::init_gl()

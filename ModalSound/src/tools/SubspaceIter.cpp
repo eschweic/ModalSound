@@ -420,7 +420,8 @@ bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
   const Eigen::MatrixXd KX = K.selfadjointView<Eigen::Lower>() * X.leftCols(lambda.size());
   Eigen::ArrayXd error(lambda.size());
   for (int i=0; i<error.size(); i++) {
-    error(i) = std::abs(X.col(i).dot(KX.col(i)) / X.col(i).dot(MX.col(i)) - lambda(i));
+    double rayleigh = X.col(i).dot(KX.col(i)) / X.col(i).dot(MX.col(i));
+    error(i) = std::abs(rayleigh - lambda(i)) / rayleigh;
   }
   if (verbose) std::cout << "error: " << error.transpose() << std::endl;
   return (error < tol).all();
@@ -515,7 +516,8 @@ int main(int argc, char const *argv[]) {
   Eigen::MatrixXd Q(n, k+p);
   Q.leftCols(R.cols()) = R;
 
-  std::default_random_engine generator;
+  // std::default_random_engine generator;
+  std::default_random_engine generator(std::chrono::system_clock::now().time_since_epoch().count());
   std::normal_distribution<double> dist(0.0, 1.0);
   auto normal = [&] () { return dist(generator); };
 
@@ -559,7 +561,8 @@ int main(int argc, char const *argv[]) {
 
   std::cout << "subspaceIteration time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
   for (int vid=0; vid<evs.size(); vid++) {
-    printf("ev#%3d:  %lf %lfHz\n", vid, evs(vid), sqrt(evs(vid)/density)*0.5*M_1_PI);
+    double freq = evs(vid) > 0.0 ? (sqrt(evs(vid)/density)*0.5*M_1_PI) : 0.0;
+    printf("ev#%3d:  %lf %lfHz\n", vid, evs(vid), freq);
   }
 
   if (!outFile.empty()) {

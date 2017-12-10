@@ -226,13 +226,13 @@ void AudioProducer::single_channel_synthesis(const Tuple3ui& tri, const Vector3d
     } // end for
 
     //// normalize the sound only for the first time, so the sound volume can change as camera moves
-    if ( normalizeScale_ < 0. )
-    {
+    // if ( normalizeScale_ < 0. )
+    // {
         double AMP = 0;
         for(int ti = 0;ti < totTicks;++ ti)
             AMP = std::max( AMP, abs(soundBuffer_[ti]) );
         normalizeScale_ = 0.6 / AMP;
-    } // end if
+    // } // end if
 
     unsigned char *ptr = reinterpret_cast<unsigned char *>(buffer_.data());
     const int channelBytes = format_.sampleSize() / 8;
