@@ -566,7 +566,7 @@ int main(int argc, char const *argv[]) {
   }
 
   if (!outFile.empty()) {
-    write_eigenvalues(Q, evs, outFile.c_str());
+    write_eigenvalues(Q.rightCols(Q.cols()-R.cols()), evs.tail(evs.size()-R.cols()), outFile.c_str());
   }
 
   if (ref) {

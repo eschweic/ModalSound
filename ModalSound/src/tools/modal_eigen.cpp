@@ -31,7 +31,7 @@ using namespace std;
 
 static string stiffMFile, massMFile, outFile;
 static int    numEigv = 200;
-static double density, freqLow, freqHigh;
+static double density, freqLow, freqHigh, tolerance;
 static bool   verbose = false;
 
 static vector<int> ptrrow[2];
@@ -112,6 +112,8 @@ static void parse_cmd(int argc, char* argv[])
                     "Lowest frequency value based on the estimated density")
             ("fmax", po::value<double>(&freqHigh)->default_value(15000.),
                     "Highest frequency value based on the estimated density")
+            ("tol,e", po::value<double>(&tolerance)->default_value(1e-12),
+                    "Tolerance for convergence")
             ("verbose,v", "Display details");
     // use configure file to specify the option
     po::options_description cfileOpt("Configure file");
@@ -165,11 +167,11 @@ static void parse_cmd(int argc, char* argv[])
         exit(1);
     }
 
-    if ( outFile.empty() ) 
-    {
-        PRINT_ERROR("Specify the output file\n");
-        exit(1);
-    }
+    // if ( outFile.empty() ) 
+    // {
+    //     PRINT_ERROR("Specify the output file\n");
+    //     exit(1);
+    // }
 
     if ( verbose )
     {
@@ -179,6 +181,7 @@ static void parse_cmd(int argc, char* argv[])
         PRINT_MSG("Output file:                %s\n", outFile.c_str());
         PRINT_MSG("# of eigenvalues est.:      %d\n", numEigv);
         PRINT_MSG("Reference density:          %g\n", density);
+        PRINT_MSG("Convergence tolerance:      %g\n", tolerance);
         PRINT_MSG("Low frequency:              %g\n", freqLow);
         PRINT_MSG("High frequency:             %g\n", freqHigh);
         PRINT_MSG("===============================================\n");
@@ -264,7 +267,6 @@ static void write_eigenvalues(int nev, int nsz,
     for(int vid = 0;vid < nev;++ vid)
     {
         fout.write((const char*)&eval[ids[vid]], sizeof(double));
-        printf("ev#%3d:  %lf %lfHz\n", vid, eval[ids[vid]], sqrt(eval[ids[vid]]/density)*0.5*M_1_PI);
     }
     // output eigenvectors
     for(int vid = 0;vid < nev;++ vid)
@@ -338,6 +340,7 @@ int main(int argc, char* argv[])
     info = 3;
     feastinit(feastparam);
     if ( verbose ) feastparam[0]=1;  /*change from default value */
+    feastparam[2] = (int)ceil(-log10(tolerance)); /*change from default value */
 
     std::chrono::system_clock::time_point start = std::chrono::system_clock::now();
     dfeast_scsrgv(&UPLO, &nrowK, data[0].data(), ptrrow[0].data(), idxcol[0].data(),
@@ -393,7 +396,14 @@ int main(int argc, char* argv[])
     std::cout << "FEAST time: " << (std::chrono::duration<double>(end - start)).count() << std::endl;
 
     //// save the data
-    if ( verbose ) PRINT_MSG("Write eigenvalues & eigenvectors into file: %s\n", outFile.c_str());
-    write_eigenvalues(M, nrowK, sortids.data(), eval.data(), evec.data(), outFile.c_str());
+    for(int vid = 0;vid < M;++ vid)
+    {
+        printf("ev#%3d:  %lf %lfHz\n", vid, eval[sortids[vid]], sqrt(eval[sortids[vid]]/density)*0.5*M_1_PI);
+    }
+
+    if (!outFile.empty()) {
+        if ( verbose ) PRINT_MSG("Write eigenvalues & eigenvectors into file: %s\n", outFile.c_str());
+        write_eigenvalues(M, nrowK, sortids.data(), eval.data(), evec.data(), outFile.c_str());
+    }
     return 0;
 }
