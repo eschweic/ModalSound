@@ -23,6 +23,7 @@ int numEigv;
 
 int i_initialSubspace, i_convTest, i_ksolver;
 
+// Which initial subspace method should be used?
 enum InitialSubspace {
   BatheSuggestion = 0,
   Random = 1,
@@ -39,6 +40,7 @@ const char* initialSubspaceName(InitialSubspace is) {
   }
 }
 
+// What is the convergence test to be used?
 enum ConvergenceTest {
   Bathe = 0,
   JND = 1,
@@ -61,6 +63,7 @@ const char* convgergenceTestName(ConvergenceTest ct) {
   }
 }
 
+// What method is used to solve the linear system?
 enum KSolver {
   LDLT = 0,
   PCG = 1,
@@ -77,6 +80,7 @@ const char* kSolverName(KSolver ks) {
   }
 }
 
+// THE FOLLOWING FUNCTION IS BASED ON CODE FOUND IN modal_eigen.cpp
 static void parse_cmd(int argc, const char* argv[])
 {
     namespace po = boost::program_options;
@@ -197,9 +201,7 @@ static void parse_cmd(int argc, const char* argv[])
     }
 }
 
-/*
- * The matrix file only stores the lower triangle part
- */
+// THE FOLLOWING FUNCTION IS BASED ON CODE FOUND IN modal_eigen.cpp
 static uint8_t read_csc_dmatrix(const char* file, 
   std::vector<int>& ptrrow,
   std::vector<int>& idxcol,
@@ -255,7 +257,7 @@ static uint8_t read_csc_dmatrix(const char* file,
  * ...
  * <eigenvec_n>
  */
-
+// THE FOLLOWING FUNCTION IS BASED ON CODE FOUND IN modal_eigen.cpp
 void write_eigenvalues(const Eigen::MatrixXd& eigenvectors, const Eigen::ArrayXd& eigenvalues,
   const char* file) {
   using namespace std;
@@ -286,7 +288,7 @@ void write_eigenvalues(const Eigen::MatrixXd& eigenvectors, const Eigen::ArrayXd
 }
 
 
-
+// Finds the centroid of a mesh.
 Vector3d centroid(const FixedVtxTetMesh<double>& tmesh) {
   double n = tmesh.num_vertices();
   Vector3d result(0.0, 0.0, 0.0);
@@ -297,6 +299,7 @@ Vector3d centroid(const FixedVtxTetMesh<double>& tmesh) {
   return result;
 }
 
+// Returns the 6-dimensional nullspace of a stiffness matrix.
 Eigen::MatrixXd getNullspace(const FixedVtxTetMesh<double>& tmesh) {
   int nVerts = tmesh.num_vertices();
   int nRows = nVerts * 3;
@@ -321,7 +324,7 @@ Eigen::MatrixXd getNullspace(const FixedVtxTetMesh<double>& tmesh) {
   return result;
 }
 
-
+// A struct for storing sparse matrices.
 struct SparseData {
 protected:
   int nrow, ncol;
@@ -366,11 +369,13 @@ public:
   }
 };
 
+// Abstract class for solving the linear system.
 class KSolverImpl {
 public:
   virtual Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) =0;
 };
 
+// Use LDLT to solve the linear system.
 class LDLTImpl : public KSolverImpl {
   Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver;
 public:
@@ -378,6 +383,7 @@ public:
   Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) { return solver.solve(rhs); }
 };
 
+// Use PCG to solve the linear system.
 class PCGImpl : public KSolverImpl {
   Eigen::SparseMatrix<double> Ksym;
   Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Upper|Eigen::Lower,
@@ -388,6 +394,7 @@ public:
   Eigen::MatrixXd solve(const Eigen::MatrixXd& rhs) { return solver.solve(rhs); }
 };
 
+// Use the Bathe convergence test.
 bool convergedBathe(const Eigen::MatrixXd& Q, const Eigen::ArrayXd& lambda, const double tol) {
   Eigen::ArrayXd denom(lambda.size());
   for (int i=0; i<denom.size(); i++) {
@@ -398,6 +405,7 @@ bool convergedBathe(const Eigen::MatrixXd& Q, const Eigen::ArrayXd& lambda, cons
   return (error < tol).all();
 }
 
+// Use the just noticeable difference convergence test.
 bool convergedJND(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lambda, const double tol) {
   const Eigen::ArrayXd prevFreq = prevLambda.sqrt(); // * 0.5 * M_1_PI);
   const Eigen::ArrayXd freq = lambda.sqrt(); // * 0.5 * M_1_PI);
@@ -406,6 +414,7 @@ bool convergedJND(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lambda
   return (error < tol).all();
 }
 
+// Use the trace convergence test.
 bool convergedTrace(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lambda, const double tol) {
   const double prevTrace = prevLambda.sum();
   const double trace = lambda.sum();
@@ -414,6 +423,7 @@ bool convergedTrace(const Eigen::ArrayXd& prevLambda, const Eigen::ArrayXd& lamb
   return error < tol;
 }
 
+// Use the Rayleigh quotient convergence test.
 bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
   const Eigen::SparseMatrix<double>& K, const Eigen::SparseMatrix<double>& M, const double tol) {
   const Eigen::MatrixXd MX = M.selfadjointView<Eigen::Lower>() * X.leftCols(lambda.size());
@@ -427,6 +437,7 @@ bool convergedRayleigh(const Eigen::ArrayXd& lambda, const Eigen::MatrixXd& X,
   return (error < tol).all();
 }
 
+// Perform a Sturm sequence check; returns the number of eigenvalues below a given threshold
 int checkNEVs(const SparseData& K, const SparseData& M, const double largestEV, const double largestRelError) {
   Eigen::SparseMatrix<double> A = K.getMap();
   A -= ((1.0 + largestRelError) * largestEV) * M.getMap();
@@ -434,6 +445,8 @@ int checkNEVs(const SparseData& K, const SparseData& M, const double largestEV, 
   return (ldlt.vectorD().array() < 0.0).count();
 }
 
+// Perform the subspace iteration algorithm. Returns the k lowest eigenvalues. Associated eigenvectors are written
+// into X, which serves as the initial subspace on input.
 Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eigen::MatrixXd& X, const int k,
   const int maxIters = 20, const double scale = 1.0, const double shift = -1.0) {
   using namespace Eigen;
@@ -497,6 +510,7 @@ Eigen::VectorXd subspaceIteration(const SparseData& K, const SparseData& M, Eige
   return ((lambda + shift) / scale).matrix();
 }
 
+// Parse command-line args and run the subspace iteration algorithm.
 int main(int argc, char const *argv[]) {
 
   parse_cmd(argc, argv);
